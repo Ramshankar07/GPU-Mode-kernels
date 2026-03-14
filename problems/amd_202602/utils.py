@@ -1,5 +1,6 @@
-import os
 import random
+from typing import Tuple
+
 import numpy as np
 import torch
 
@@ -28,8 +29,12 @@ def get_device(use_cuda: bool = True) -> torch.device:
 # Adapted from https://github.com/linkedin/Liger-Kernel/blob/main/test/utils.py
 @torch.no_grad()
 def verbose_allclose(
-    received: torch.Tensor, expected: torch.Tensor, rtol=1e-05, atol=1e-08, max_print=5
-) -> list[str]:
+        received: torch.Tensor,
+        expected: torch.Tensor,
+        rtol=1e-05,
+        atol=1e-08,
+        max_print=5
+) -> Tuple[bool, list[str]]:
     """
     Assert that two tensors are element-wise equal within a tolerance, providing detailed information about mismatches.
 
@@ -39,16 +44,13 @@ def verbose_allclose(
     rtol (float): Relative tolerance; relative to expected
     atol (float): Absolute tolerance.
     max_print (int): Maximum number of mismatched elements to print.
-
-    Raises:
-    AssertionError: If the tensors are not all close within the given tolerance.
     """
     # Check if the shapes of the tensors match
     if received.shape != expected.shape:
-        return ["SIZE MISMATCH"]
+        return False, ["SIZE MISMATCH"]
 
     # Calculate the difference between the tensors
-    diff = torch.abs(received - expected)
+    diff = torch.abs(received.to(torch.float32) - expected.to(torch.float32))
 
     # Determine the tolerance
     tolerance = atol + rtol * torch.abs(expected)
@@ -60,13 +62,9 @@ def verbose_allclose(
     nan_mismatched = torch.logical_xor(torch.isnan(received), torch.isnan(expected))
 
     # Find +inf mismatched elements
-    posinf_mismatched = torch.logical_xor(
-        torch.isposinf(received), torch.isposinf(expected)
-    )
+    posinf_mismatched = torch.logical_xor(torch.isposinf(received), torch.isposinf(expected))
     # Find -inf mismatched elements
-    neginf_mismatched = torch.logical_xor(
-        torch.isneginf(received), torch.isneginf(expected)
-    )
+    neginf_mismatched = torch.logical_xor(torch.isneginf(received), torch.isneginf(expected))
 
     # Find all mismatched elements
     mismatched = torch.logical_or(
@@ -85,20 +83,16 @@ def verbose_allclose(
 
         for index in mismatched_indices[:max_print]:
             i = tuple(index.tolist())
-            mismatch_details.append(f"ERROR AT {i}: {received[i]} {expected[i]}")
+            mismatch_details.append(f"ERROR at {i}: {received[i]} {expected[i]}")
         if num_mismatched > max_print:
-            mismatch_details.append(
-                f"... and {num_mismatched - max_print} more mismatched elements."
-            )
-        return mismatch_details
+            mismatch_details.append(f"... and {num_mismatched - max_print} more mismatched elements.")
+        return False, mismatch_details
 
-    return []
+    return True, [f"Maximum error: {torch.max(diff)}"]
 
 
 @torch.no_grad()
-def verbose_allequal(
-    received: torch.Tensor, expected: torch.Tensor, max_print: int = 5
-):
+def verbose_allequal(received: torch.Tensor, expected: torch.Tensor, max_print: int = 5) -> Tuple[bool, list[str]]:
     """
     Assert that two tensors are element-wise perfectly equal, providing detailed information about mismatches.
 
@@ -122,83 +116,32 @@ def verbose_allequal(
 
         for index in mismatched_indices[:max_print]:
             i = tuple(index.tolist())
-            mismatch_details.append(f"ERROR AT {i}: {received[i]} {expected[i]}")
+            mismatch_details.append(f"ERROR at {i}: {received[i]} {expected[i]}")
         if num_mismatched > max_print:
-            mismatch_details.append(
-                f"... and {num_mismatched - max_print} more mismatched elements."
-            )
-        return mismatch_details
+            mismatch_details.append(f"... and {num_mismatched - max_print} more mismatched elements.")
+        return False, mismatch_details
 
-    return []
+    return True, []
 
 
-def match_reference(
-    data, output, reference: callable, rtol=1e-05, atol=1e-08
-) -> tuple[bool, str]:
+def match_reference(data, output, reference: callable, rtol=1e-05, atol=1e-08):
     """
     Convenient "default" implementation for tasks' `check_implementation` function.
     """
     expected = reference(data)
+    good, reasons = verbose_allclose(output, expected, rtol=rtol, atol=atol)
 
-    if len(output) != len(expected):
-        return (
-            False,
-            f"output length mismatch: got {len(output)}, expected {len(expected)}",
-        )
+    if len(reasons) > 0:
+        return good, "\\n".join(reasons)
 
-    for i, (output_i, expected_i) in enumerate(zip(output, expected)):
-        reasons = verbose_allclose(output_i, expected_i, rtol=rtol, atol=atol)
-        if len(reasons) > 0:
-            return (
-                False,
-                f"mismatch found! custom implementation doesn't match reference: {i} {reasons}",
-            )
-
-    return True, ""
+    return good, ''
 
 
 def make_match_reference(reference: callable, **kwargs):
     def wrapped(data, output):
         return match_reference(data, output, reference=reference, **kwargs)
-
     return wrapped
 
-
-class DeterministicContext:
-    def __init__(self):
-        self.allow_tf32 = None
-        self.deterministic = None
-        self.cublas = None
-
-    def __enter__(self):
-        self.cublas = os.environ.get("CUBLAS_WORKSPACE_CONFIG", "")
-        self.allow_tf32 = torch.backends.cudnn.allow_tf32
-        self.deterministic = torch.backends.cudnn.deterministic
-        torch.backends.cudnn.allow_tf32 = False
-        torch.backends.cudnn.deterministic = True
-        torch.use_deterministic_algorithms(True)
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        torch.backends.cudnn.allow_tf32 = self.allow_tf32
-        torch.backends.cudnn.deterministic = self.deterministic
-        torch.use_deterministic_algorithms(False)
-        os.environ["CUBLAS_WORKSPACE_CONFIG"] = self.cublas
-
-
-def clear_l2_cache():
-    # import cupy as cp
-    # cp.cuda.runtime.deviceSetLimit(cp.cuda.runtime.cudaLimitPersistingL2CacheSize, 0)
-    # create a large dummy tensor
-    dummy = torch.empty((32, 1024, 1024), dtype=torch.int64, device="cuda")
-    # write stuff to
-    dummy.fill_(42)
-    del dummy
-
-
 def clear_l2_cache_large():
-    # import cupy as cp
-    # cp.cuda.runtime.deviceSetLimit(cp.cuda.runtime.cudaLimitPersistingL2CacheSize, 0)
-    # create a large dummy tensor
     dummy = torch.randn((16000, 1024, 1024), device="cuda")
     del dummy
