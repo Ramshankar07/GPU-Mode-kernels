@@ -56,6 +56,10 @@ cover/
 *.mo
 *.pot
 
+# Profiling outputs (nsys, sqlite)
+*.nsys-rep
+*stress_profile*.sqlite
+
 # Django stuff:
 *.log
 local_settings.py
