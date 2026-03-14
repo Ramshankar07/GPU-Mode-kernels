@@ -99,7 +99,7 @@ def kernel(
     #
     mC_mnl_iter = cute.make_ptr(
         c_dtype, tensor_of_abc_ptrs[group_idx, 2], cute.AddressSpace.gmem
-    ).align(32)
+    ).align(32) # 32 bytes alignment since the global memory is 256 bytes aligned
     m = tensor_of_problem_sizes[group_idx, 0]
     n = tensor_of_problem_sizes[group_idx, 1]
     k = tensor_of_problem_sizes[group_idx, 2]
@@ -107,13 +107,13 @@ def kernel(
 
     mC_mnl_layout = cute.make_layout(
         (m, n, l),
-        stride=(cute.assume(n, 32), 1, cute.assume(m * n, 32),))
+        stride=(cute.assume(n, 32), 1, cute.assume(m * n, 32),)) # the layout is (m, n, l) and the stride is (n, 1, m * n)
     mC_mnl = cute.make_tensor(mC_mnl_iter, mC_mnl_layout)
     # Local partition for global C Tensor
     # (bM, bN, RestM, RestN, RestL)
     gC_mnl = cute.local_tile(
         mC_mnl, cute.slice_(mma_tiler_mnk, (None, None, 0)), (coord_x, coord_y, 0)
-    )
+    ) 
 
     #
     # Define shared storage for kernel
